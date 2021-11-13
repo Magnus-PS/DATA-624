@@ -1,0 +1,262 @@
+---
+title: "DATA624Pres"
+author: "Gabriel Abreu, Magnus Skonberg"
+date: "`r Sys.Date()`"
+output: 
+ html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+```
+
+```{r library, comment=FALSE, warning=FALSE, message=FALSE }
+
+library(dplyr)
+library(forecast)
+library(tidyverse)
+library(randomForest)
+library(tsibble)
+library(readr)
+
+```
+
+## Background
+
+The purpose of this presentation is to explore a real world application of a **Random Forest** model on time series data. Random forest is one of the simplest, most robust, powerful and popular ML algorithms and we wanted to go "full circle" in exploring this popular algorithm, from a subsection of this week's tree-based model topic, on time series data (something we covered in-depth earlier in the semester).
+
+### Approach
+
+We’ll use differencing and statistical transformations, cornerstones of ARIMA modeling, to pre-process our data.
+
+FILL IN MORE ONCE FURTHER INTO CODE
+
+### The Data
+
+We use a time series from the German Statistical Office on the German wage and income tax revenue from 1999 – 2018 (after tax redistribution). You can download the data here. Let’s do it!
+
+---
+
+## EDA & Data Prep
+
+In order to use random forest for time series data we transform, difference, and embed our data.
+
+We read in and pre-process the German tax data so as to *transform* our csv file into a compatible time series format:
+
+```{r}
+
+urlfile="https://raw.githubusercontent.com/Magnus-PS/DATA-624/main/tax.csv"
+#mydata<-read_csv(url(urlfile))
+#head(mydata)
+
+# read in the csv file
+tax_tbl <- readr::read_delim(file = urlfile, 
+                             delim = ";", #split on ;
+                             col_names = c("Year", "Type", month.abb), #label columns
+                             skip = 1, #skip 1st row
+                             na = c("...")) %>% #label ... entries as NA
+    select(-Type) %>% #drop tax type label
+    gather(Date, Value, -Year) %>% #unite date and value minus year
+    unite("Date", c(Date, Year), sep = " ") %>% #combine month and year
+    mutate( Date = Date %>% 
+            lubridate::parse_date_time("m y") %>% 
+            yearmonth()) %>% 
+    drop_na() %>% #drop NAs
+    as_tsibble(index = "Date") %>% #specify Date column as index
+    filter(Date <= yearmonth(as.Date("2018-12-01"))) #drop early 2019 data
+
+# convert to ts format
+tax_ts <- as.ts(tax_tbl)
+
+```
+
+To do so we drop the "Type" column, exclude data from 2019, combine month and year into one column, and convert our data from tabular to time series format.
+
+Next, we verify that there are no missing data issues and proceed to visualizing German Wage and Income Tax from 1999 to 2018:
+
+```{r}
+
+#Explore missing data
+#has_gaps(tax_tbl) # implicit missings
+#colSums(is.na(tax_tbl[, "Value"])) # explicit missings
+
+#Visualize German Tax Data
+plot_org <- tax_tbl %>% 
+  ggplot(aes(Date, Value / 1000)) + # to get the axis on a more manageable scale
+  geom_line() +
+  theme_minimal() +
+  labs(title = "German Wage and Income Taxes 1999 - 2018", x = "Year", y = "Euros")
+
+plot_org
+
+```
+
+We observe seasonality and trend in our data. German tax income, likely similar to American tax incomes, appears to have a major spike once a year (likely when personal taxes are due) with multiple smaller spikes throughout the year. Additionally, the total tax income is climbing on a year-to-year basis.
+
+*What does this mean?*
+
+We have to difference our data to make our non-stationary time series stationary and remove the variance within our data that is present from level to level. This, differencing time series data to make it stationary, is an essential step for classical time series models much like it is for a random forest model. 
+
+**Reminder:** making our data stationary means that the mean and variance of the series is stable and does not change over time. It implies stability.
+
+### Differencing and Transforming
+
+We apply first order differencing, the difference between consecutive obervations (ie. one month to the next), to stabilize the mean of our time series and a log transformation to stabilize the variance. The prior plot is set above our transformed plot to highlight the difference:
+
+```{r}
+
+# pretend we're in December 2017 and have to forecast the next twelve months
+tax_ts_org <- window(tax_ts, end = c(2017, 12))
+
+# log transform and difference the data
+tax_ts_trf <- tax_ts_org %>% 
+  log() %>% 
+  diff(nsdiffs(tax_ts_org)) #required order of differencing: 1
+
+# check out the difference! (pun)
+plot_trf <- tax_ts_trf %>% 
+  autoplot() +
+  xlab("Year") +
+  ylab("Euros") +
+  ggtitle("German Wage and Income Taxes 1999 - 2018") +
+  theme_minimal()
+
+gridExtra::grid.arrange(plot_org, plot_trf)
+
+```
+
+It appears that first order differencing and log transformation have set our data straight. We proceed with stationary data.
+
+### Time Delay Embedding
+
+
+From here, we'll train our random forest model and make forecasts for 2018, which we'll later compare to the actual values to assess the accuracy of our model. In order to do so, we'll later have to reverse our transformations to bring them to the original scale.
+
+Before doing so we have to bring our data into a form that a machine learning algorithm can handle. What we need to do, essentially, is transform a vector into a matrix. This is a structure that a ML algorithm can work with.
+
+To do so, we'll make use of a concept called *time delay embedding* using the `embed()` function:
+
+```{r}
+
+lag_order <- 6 # desired lag number (6 months)
+horizon <- 12 # forecast duration (12 months)
+
+tax_ts_mbd <- embed(tax_ts_trf, lag_order + 1) # embedding magic!
+
+```
+
+Time delay embedding represents a time series in a Euclidean space (a 3-D geometrical space) and allows us to proceed with any linear or non-linear regression method on time series data, whether Random Forest, Gradient Boosting, etc. We set our desired number of lags to be 6 months and the duration of our forecast to be 12 months.
+
+## Model Building
+
+We make use of a [direct forecasting strategy](https://insightr.wordpress.com/2018/01/10/direct-forecast-x-recursive-forecast/), split our data into training and test sets, and fit our "out of the box" random forest model:
+
+```{r}
+
+#train-test  split
+y_train <- tax_ts_mbd[, 1] # the target
+X_train <- tax_ts_mbd[, -1] # everything but the target
+
+y_test <- window(tax_ts, start = c(2018, 1), end = c(2018, 12)) # 2018
+X_test <- tax_ts_mbd[nrow(tax_ts_mbd), c(1:lag_order)] # test set consisting of 6 most recent values (6 lags) of training set
+
+#forecast
+forecasts_rf <- numeric(horizon)
+
+for (i in 1:horizon){
+  # set seed
+  set.seed(333)
+
+  # fit the model
+  fit_rf <- randomForest(X_train, y_train)
+
+  # predict using the test set
+  forecasts_rf[i] <- predict(fit_rf, X_test)
+
+  # here is where we repeatedly reshape the training data to reflect the time distance
+  # corresponding to the current forecast horizon.
+  y_train <- y_train[-1] 
+
+  X_train <- X_train[-nrow(X_train), ] 
+}
+
+```
+
+We train 12 models and get 12 separate forecasts (one for 1 mo, one for 2mos, etc etc. up until 12 months) and before we can assess our Random Forest model, we have to transform the forecasts back to the original scale:
+
+```{r}
+
+# calculate the exp term
+exp_term <- exp(cumsum(forecasts_rf))
+
+# extract the last observation from the time series (y_t)
+last_observation <- as.vector(tail(tax_ts_org, 1))
+
+# calculate the final predictions
+backtransformed_forecasts <- last_observation * exp_term
+
+# convert to ts format
+y_pred <- ts(
+  backtransformed_forecasts,
+  start = c(2018, 1),
+  frequency = 12
+)
+
+# add the forecasts to the original tibble
+tax_tbl <- tax_tbl %>% 
+  mutate(Forecast = c(rep(NA, length(tax_ts_org)), y_pred))
+
+# visualize the forecasts
+plot_fc <- tax_tbl %>% 
+  ggplot(aes(x = Date)) +
+  geom_line(aes(y = Value / 1000)) +
+  geom_line(aes(y = Forecast / 1000), color = "blue") +
+  theme_minimal() +
+  labs(
+    title = "Forecast of the German Wage and Income Tax for the Year 2018",
+    x = "Year",
+    y = "Euros"
+  )
+
+plot_fc
+accuracy(y_pred, y_test)
+
+```
+
+We reverse the effects of earlier differencing and (log) transformation by exponentiating the cumulative sum of our transformed forecasts (reverse log) and multiplying the result with the last observation of our time series (reverse diff) ... the resulting plot and output statistics are promising.
+
+Based on the plot, our forecast appears to capture the trend and seasonality of the data.
+
+When we consider, accuracy metrics it appears that our model leaves much to be gained with regard to RMSE (the lower the better) while the MAPE (2.64%) appears to be excellent.
+
+For comparison, we consider a Seasonal Naive and ARIMA model ...
+
+LEFT OFF HERE: add ARIMA model and compare / discuss performance metrics
+
+
+```{r}
+
+benchmark <- forecast(snaive(tax_ts_org), h = horizon)
+
+tax_ts %>% 
+  autoplot() +
+  autolayer(benchmark, PI = FALSE)
+
+accuracy(benchmark, y_test)
+
+```
+
+---
+
+## Reference
+
+This presentation was made with reference to the following resource(s):
+
+* Manuel Tilgner. (2019). **Time Series Forecasting with Random Forest**. Retrieved from: https://www.statworx.com/at/blog/time-series-forecasting-with-random-forest/

@@ -1,0 +1,78 @@
+---
+title: "Time Series with Random Forest"
+author: "Gabe Abreu | Magnus Skonberg"
+date: "11/13/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Time Series with Random Forest 
+
+
+#### Introduction
+
+We're going to demonstrate forecasting using random forest. The dataset we're using is German taxes from 1999 - 2019. The data is taken from the Stats Worx github(https://github.com/STATWORX/blog/tree/master/time%20series%20forecasting). We wanted to show a practical application of random forest on a time series. 
+
+```{r}
+# load the packages
+suppressPackageStartupMessages(require(tidyverse))
+suppressPackageStartupMessages(require(tsibble))
+suppressPackageStartupMessages(require(randomForest))
+suppressPackageStartupMessages(require(forecast))
+```
+
+
+```{r}
+# specify the csv file (your path here)
+file <- "tax.csv"
+```
+
+
+```{r}
+# read in the csv file
+tax_tbl <- readr::read_delim(
+  file = file,
+  delim = ";",
+  col_names = c("Year", "Type", month.abb),
+  skip = 1,
+  col_types = "iciiiiiiiiiiii",
+  na = c("...")
+) 
+```
+
+
+```{r}
+tax_tbl%>% 
+  select(-Type) %>% 
+  gather(Date, Value, -Year) %>% 
+  unite("Date", c(Date, Year), sep = " ") %>% 
+  mutate(
+    Date = Date %>% 
+      lubridate::parse_date_time("m y") %>% 
+      yearmonth()
+  ) -> tax_tbl2
+```
+   
+    
+```{r}
+tax_tbl2 %>%
+  drop_na() %>% 
+  as_tsibble(index = "Date") -> tax_tbl2
+
+# convert to ts format
+tax_ts <- as.ts(tax_tbl2)
+
+```
+
+
+```{r}
+# implicit missings
+has_gaps(tax_tbl2)
+
+# explicit missings
+colSums(is.na(tax_tbl2[, "Value"]))
+
+```

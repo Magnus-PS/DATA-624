@@ -34,17 +34,22 @@ The purpose of this presentation is to explore a real world application of a **R
 
 ### Approach
 
-We’ll use differencing and statistical transformations, cornerstones of ARIMA modeling, to pre-process our data.
+In completing this exploration of a Random Forest model we:
 
-FILL IN MORE ONCE FURTHER INTO CODE
+* pre-process and visualize our data upon reading it in,
+* difference and transform the data so as to make it stationary,
+* utilize time delay embedding to bring our data into a form an ML model can handle,
+* train our model, consider its statistics, and compare its performance with that of a SNAIVE model.
 
-### The Data
+### Data
 
-We use a time series from the German Statistical Office on the German wage and income tax revenue from 1999 – 2018 (after tax redistribution). You can download the data here. Let’s do it!
+We use a time series from the German Statistical Office on German wage and income tax revenue from 1999 – 2019 (after tax redistribution). *Note: we end up dropping entries from 2019 because they aren't complete for the year.*
+
+The can be downloaded from [STATWORX's GitHub](https://github.com/STATWORX/blog/tree/master/time%20series%20forecasting).
 
 ---
 
-## EDA & Data Prep
+## Pre-process and Visualize
 
 In order to use random forest for time series data we transform, difference, and embed our data.
 
@@ -100,13 +105,15 @@ plot_org
 
 We observe seasonality and trend in our data. German tax income, likely similar to American tax incomes, appears to have a major spike once a year (likely when personal taxes are due) with multiple smaller spikes throughout the year. Additionally, the total tax income is climbing on a year-to-year basis.
 
+## Data Preparation
+
 *What does this mean?*
 
-We have to difference our data to make our non-stationary time series stationary and remove the variance within our data that is present from level to level. This, differencing time series data to make it stationary, is an essential step for classical time series models much like it is for a random forest model. 
+We have to difference our data to make our non-stationary time series stationary and remove the variance within our data that is present from level to level. This, differencing time series data to make it stationary, is an essential step for classical time series models much like it will be for our random forest model. 
 
 **Reminder:** making our data stationary means that the mean and variance of the series is stable and does not change over time. It implies stability.
 
-### Differencing and Transforming
+### Difference and Transform
 
 We apply first order differencing, the difference between consecutive obervations (ie. one month to the next), to stabilize the mean of our time series and a log transformation to stabilize the variance. The prior plot is set above our transformed plot to highlight the difference:
 
@@ -136,12 +143,11 @@ It appears that first order differencing and log transformation have set our dat
 
 ### Time Delay Embedding
 
-
 From here, we'll train our random forest model and make forecasts for 2018, which we'll later compare to the actual values to assess the accuracy of our model. In order to do so, we'll later have to reverse our transformations to bring them to the original scale.
 
-Before doing so we have to bring our data into a form that a machine learning algorithm can handle. What we need to do, essentially, is transform a vector into a matrix. This is a structure that a ML algorithm can work with.
+Before doing so we have to bring our data into a form that a machine learning algorithm can handle. What we need to do, essentially, is transform a vector into a matrix (a structure that a ML algorithm can work with).
 
-To do so, we'll make use of a concept called *time delay embedding* using the `embed()` function:
+To do so, we make use of a concept called *time delay embedding* using the `embed()` function:
 
 ```{r}
 
@@ -230,28 +236,39 @@ accuracy(y_pred, y_test)
 
 ```
 
-We reverse the effects of earlier differencing and (log) transformation by exponentiating the cumulative sum of our transformed forecasts (reverse log) and multiplying the result with the last observation of our time series (reverse diff) ... the resulting plot and output statistics are promising.
+We reverse the effects of earlier differencing and (log) transformation by exponentiating the cumulative sum of our transformed forecasts (reverse log) and multiplying the result with the last observation of our time series (reverse diff) ... the resulting plot and output statistics hold some promise.
 
 Based on the plot, our forecast appears to capture the trend and seasonality of the data.
 
-When we consider, accuracy metrics it appears that our model leaves much to be gained with regard to RMSE (the lower the better) while the MAPE (2.64%) appears to be excellent.
+When we consider accuracy metrics, on the surface it appears that we have a high RMSE but when we consider that we'd divided our tax value by 1000 when plotting it brings the high RMSE value into perspective. We're dealing with large tax revenue values and so a larger RMSE is to be expected. Thus we put more of an emphasis on the MAPE. The MAPE (2.64%) is excellent. Especially when we consider that this is performance was with respect to unseen test data.
 
-For comparison, we consider a Seasonal Naive and ARIMA model ...
-
-LEFT OFF HERE: add ARIMA model and compare / discuss performance metrics
-
+For comparison, we visit the performance statistics of a Seasonal Naive model:
 
 ```{r}
 
-benchmark <- forecast(snaive(tax_ts_org), h = horizon)
+snaive <- forecast(snaive(tax_ts_org), h = horizon)
 
 tax_ts %>% 
   autoplot() +
-  autolayer(benchmark, PI = FALSE)
+  autolayer(snaive, PI = FALSE)
 
-accuracy(benchmark, y_test)
+accuracy(snaive, y_test)
 
 ```
+
+The plot looks decent although it doesn't quite capture the upward trend in the same way our random forest model did. When we compare accuracy statistics, we see that our Random Forest model had a far lower RMSE value with a MAPE that was half the value of our seasonal naive model's performance.
+
+Our Random Forest model was a far better model than a seasonal naive model in predicting German wage and taxes for 2018.
+
+## Conclusion
+
+**It appears that this was a good real world application of a Random Forest model.** We were able to predict German wage and income taxes for a full year with less than 3% mean absolute percent error (MAPE).
+
+How might it be further improved?
+
+1. tune hyper parameters,
+2. experiment with box cox rather than log transformation,
+3. compare to a boosting model (ie. AdaBoost or XGBoost)
 
 ---
 

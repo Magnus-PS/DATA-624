@@ -260,6 +260,146 @@ The plot looks decent although it doesn't quite capture the upward trend in the 
 
 Our Random Forest model was a far better model than a seasonal naive model in predicting German wage and taxes for 2018.
 
+
+Tuning (A Different Approach)
+--------------------------------
+
+1. Pick hyperparameters,
+2. Select an appropriate range of values for each
+3. Determine the "best" configuration 
+
+We're going to create Time Slices in order to perform cross-validation on a time series. Essentially, training sets consiste only of observations that occurred prior to the observation that forms the test set. No future observations can be used in creating the forecast. 
+The approach boils down to creating mutliple train/test splits, testing each hyperparameter with multiple training/testing sets. 
+
+Check out Hyndman's article on cross-validation for time series: https://robjhyndman.com/hyndsight/tscv/
+
+```{r}
+#Hold out last 12 observations from our train set because this is how far we want to predict into the future
+caret::createTimeSlices(
+  1:nrow(X_train),
+  initialWindow = nrow(X_train) - horizon,
+  horizon = horizon,
+  fixedWindow = TRUE
+)
+
+```
+
+
+```{r}
+tr_control <- caret::trainControl(
+  method = 'timeslice',
+  initialWindow = nrow(X_train) - horizon,
+  fixedWindow = TRUE
+)
+
+```
+
+Random Forest 2 most important hyperparameters are ntree, the number of tress and mtry, the number of predictors that get sampled at each split in the tree. 
+
+Typically, good values for ntree are a few hundred or thousand (more trees, greater accuracy). This approach is computationally expensive, so for graduate students trying to do a demonstration: 500 trees is enough. 
+
+The mtry parameter is the number of predictors that get considered as plitting candidates at each node. A good rule of thumb is p (number of predictors)/3. 
+
+We will use the traditional methodology to find mtry. The variable holdout_result says the best model will produced with mtry 6. 
+
+```{r}
+tune_grid <- expand.grid(
+  mtry = c(
+    ncol(X_train), # p
+    ncol(X_train) / 3, # p / 3
+    ceiling(sqrt(ncol(X_train))) # square root of p
+  )
+)
+
+holdout_result <- caret::train(
+  data.frame(X_train),
+  y_train,
+  method = 'rf',
+  trControl = tr_control,
+  tuneGrid = tune_grid
+)
+
+holdout_result
+
+```
+
+
+Here we are creating k-fold cross validation, helping us figure out which configuration is 'best'. Cross-validation works for time series, if it is autoregressive. This means that k-fold CV works if the predictors the model are lagged verions of the response.
+
+Using repeated cross validation we get an mtry value of 2 for the best model. 
+
+```{r}
+tr_control <- trainControl(
+  method = 'repeatedcv',
+  number = 10, 
+  repeats = 3
+)
+
+kfold_result <- caret::train(
+  data.frame(X_train),
+  y_train,
+  method = 'rf',
+  trControl = tr_control,
+  tuneGrid = tune_grid
+)
+
+kfold_result
+```
+
+
+
+```{r}
+# set up our empty forecast tibble
+forecasts_rf <- tibble(
+  mtry_holdout = rep(0, horizon),
+  mtry_kfold = rep(0, horizon)
+)
+
+# collect the two mtry values from the tuning step
+mtrys <- c(
+  holdout_result$bestTune[[1]],   
+  kfold_result$bestTune[[1]]
+)
+
+# train the model in a double loop
+for (i in seq_len(length(mtrys))) {
+  for (j in seq_len(horizon)) {
+    # set seed
+    set.seed(2019)
+
+    # fit the model
+    fit_rf2 <- randomForest(X_train, y_train, mtry = mtrys[i])
+
+    # predict using the test set
+    forecasts_rf[j, i] <- predict(fit_rf2, X_test)
+
+    # here is where we repeatedly reshape the training data to reflect the time                            # distance corresponding to the current forecast horizon.
+    y_train <- y_train[-1] 
+
+    X_train <- X_train[-nrow(X_train), ] 
+  }
+
+}
+```
+
+
+```{r}
+last_observation <- as.vector(tail(tax_ts_org, 1))
+
+forecasts <- forecasts_rf %>% 
+  purrr::map_df(function(x) exp(cumsum(x)) * last_observation)
+
+accuracies <- forecasts %>% 
+  purrr::map(function(x) accuracy(x, as.vector(y_test))) %>%
+  do.call(rbind, .)
+
+accuracies
+
+```
+
+The tuned model with with k-fold has a reduced RMSE and a lower MAPE. The tuned model does perform better. 
+
+
 ## Conclusion
 
 **It appears that this was a good real world application of a Random Forest model.** We were able to predict German wage and income taxes for a full year with less than 3% mean absolute percent error (MAPE).

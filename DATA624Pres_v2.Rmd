@@ -268,7 +268,9 @@ Tuning (A Different Approach)
 2. Select an appropriate range of values for each
 3. Determine the "best" configuration 
 
-We're going to create time slices in order to perform cross-validation on a time series. Essentially, training sets consist only of observations that occurr prior to the observation that forms the test set. No future observations can be used in creating the forecast. The approach can be boiled down to creating multiple train/test splits and testing each hyperparameter with multiple training/testing sets. 
+
+The optimal method for creating a training and testing set for a time series is to actually use multiple training and testing sets, but that is computationally exhausting. So for the purposes of this presentation we're going to use the Timeslice function to create a holdout testing set. Hold-out simply means splitting your dataset into a train and test set. We're going to train our model using 2 approaches to select a tuned grid, one with hold-out and the other with k-fold cross-validation.
+
 
 ```{r}
 
@@ -300,7 +302,7 @@ Typically, good values for ntree sit in the range of a few hundred to a thousand
 
 The mtry parameter is the number of predictors that get considered as splitting candidates at each node. A good rule of thumb is p (number of predictors)/3. 
 
-We will use the traditional methodology to find mtry. The variable holdout_result says the best model will produced with mtry 6:
+We will use the traditional methodology to find mtry. The variable holdout_result says the best model will be produced with mtry 6:
 
 ```{r}
 
@@ -324,7 +326,9 @@ holdout_result
 
 ```
 
-Here we are creating k-fold cross validation, helping us figure out which configuration is 'best'. **Cross-validation works for time series, if it is autoregressive.** This means that k-fold CV works if the predictors the model are lagged versions of the response variable.
+Here we are creating k-fold cross validation, helping us figure out which configuration is 'best'. K-fold cross validation is when the dataset is randomly split into 'k' group. 
+
+**Cross-validation works for time series, if it is autoregressive.** This means that k-fold CV works if the predictors the model are lagged versions of the response variable.
 
 Using repeated cross validation we get an mtry value of 2 for the best model. 
 

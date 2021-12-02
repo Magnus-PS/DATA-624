@@ -1,4 +1,4 @@
----
+ ---
 title: "DATA624HW8"
 author: "Gabriel Abreu, Magnus Skonberg"
 date: "`r Sys.Date()`"
@@ -31,12 +31,13 @@ library(tidyr)
 library(kableExtra)
 library(mice)
 library(Boruta)
+library(randomForest)
 
 # Comment out below if / when we need
 
 # library(MASS)
 # library(mlbench)
-# library(caret)
+  library(caret)
 # library(earth)
 # library(nnet)
 # library(car)
@@ -367,7 +368,7 @@ colSums(is.na(final_df))
 ```
 
 We confirm successful imputation via presence of all 0s when we search our variables for NA values. *Note: the `PH` column has 271 NA values because we imputed training and test data in one fell swoop and didn't touch this column since this is what we're later predicting.*
-
+-------------------------------------------------------------------------------------------------
 ## Outlier Handling
 
 With missing values imputed, we proceed to handle those that can skew the predictive capabilities of our models, the outliers.
@@ -382,27 +383,366 @@ for outlier handling we could build a basic linear model and use Cook's distance
 
 ```
 
-## Normalization
+**Discussion Topic**
 
-We can center and scale our data so that it all sits on the same scale with normal distribution. If I recall correctly this is important for regression but may not be so much so / may automatically be handled with models like RF ...
+NOTE TO MAGNUS: I found a bunch of different ways to handle outliers. Quesion is do we need to handle them? Random Forest can handle the outliers. We can also do a BoxCox transformation on the data or a YeoJohnson using the PreProcess function.
+
+The Training set has NA values for PH, which messes things up later on, so I think we need to impute PH values. The imputation using KNN caused final_df to have a total of 64 columns...so I did some cleaning below. We can discuss if you don't like the approach. 
+
+
+
+-------------------------------------------------------------------------------------------------
+
+## Normalization 
+
+We can utilize the preProcess function from the caret package to center and scale the variables. This will optimize the data set for the different models we're going to build. It is important to note that Random Forest does not need the data to be normalized. By scaling our data, it can smooth any nonlinear relationships in the model. If there are nonlinear relationships, by transforming the data, these nonlinearities are not going to be reflected in the estimates. 
+
+However, it is important to normalize data for regression algorithms, as well as neural networks. Since we are going to implement regression and random forest models, it is best to create 2 data sets, one normalized and one that is not. 
+
+```{r, echo=FALSE}
+df_train2 <- df_train
+
+df_train2 <- df_train2 %>% select(c(-"Brand.Code", -"Dataset", -"PH"))
+
+```
+
+
+```{r}
+set.seed(150)
+Processed <- preProcess(df_train2, 
+                   method = c("knnImpute", "center", "scale"))
+complete_ph <- predict(Processed, df_train2)
+complete_ph$PH = df_train$PH
+
+```
+
+```{r}
+complete_ph <- complete_ph %>% na.omit()
+```
+
+```{r, echo=FALSE}
+
+phframe <- complete_ph[,-c(nearZeroVar(complete_ph))]
+corr_data <- findCorrelation(cor(phframe), cutoff = 0.90)
+phframe <- phframe[, -corr_data]
+
+```
+
+Split Normalized Data Into Training/Testing Set
+
+```{r, echo=FALSE}
+set.seed(150)
+predictors <- subset(phframe, select = -PH)
+PH <- subset(phframe, select="PH")
+
+initsplit2 <- createDataPartition(PH$PH, p=0.8, list=FALSE)
+
+
+#Create Training Data to tune the model
+X.train.cs <- predictors[initsplit2,]
+Y.train.cs <- PH[initsplit2,]
+
+
+#Create testing data to evaluate the model
+X.test.cs <- predictors[-initsplit2,]
+Y.test.cs <- PH[-initsplit2,]
+
+```
 
 # Model Building
 
-## Multi-linear regression
+## Linear Regression
 
-AIC optimized (stepAIC function) v. kitchen sink (all variable) models to compare accuracy.
+### Multi-linear regression
 
-## Random forest
+```{r}
 
-Optimized parameter selection v. out-of-the-box
+linear_model <- train(X.train.cs, Y.train.cs,
+                      method='lm',
+                      trControl=trainControl(method = "cv"))
+```
 
-## Gradient boosting
+
+### AIC optimized
+
+```{r}
+aic_model <- train(X.train.cs, Y.train.cs,
+                      method='lmStepAIC',
+                      trControl=trainControl(method = "cv"))
+
+```
 
 
-...
+### Partial Least Squares
 
-I don't believe Neural Networks would be useful here being that our dataset's not that large ... Maybe instead of considering another model we play with parameters within models to optimize and then compare best Multi-linear regression v. Random forest v. Gradient boosting ...
+```{r}
+pls_model <- train(X.train.cs, Y.train.cs,
+                      method='pls',
+                      metric='Rsquared',
+                      tuneLength=10,
+                      trControl=trainControl(method = "cv"))
+
+```
+
+Linear Model Predictions:
+
+```{r}
+set.seed(150)
+
+
+lmPred <- predict(linear_model, newdata = X.test.cs)
+lmResample <- postResample(pred=lmPred, obs = Y.test.cs)
+
+aicPred <-predict(aic_model, newdata=X.test.cs)
+aicResample <- postResample(pred=aicPred, obs=Y.test.cs)
+
+plsPred <-predict(pls_model, newdata=X.test.cs)
+plsReSample <- postResample(pred=plsPred, obs = Y.test.cs)
+
+```
+
+```{r}
+display <- rbind(
+"Linear Regression" = lmResample,
+"Stepwise AIC" = aicResample,
+"Partial Least Sqaures" = plsReSample
+)
+
+
+display %>% kable() %>% kable_paper()
+
+
+```
+
+Importance of Variables (Best Non-linear Model):
+
+Using Rsquared and MAE as the principal criteria for selecting the best model, the linear model produces the best metrics. However, the Rsquared value is very low. All of the linear models produced very similar results, suggesting that the relationship between our target variable and the predictors is not linear. 
+
+Let's investigate the top ten influential predictors. 
+
+```{r, echo=FALSE}
+plot(varImp(linear_model), top = 10)
+```
+
+We see that `Mnf.Flow`, `Temperature`, `Carb.Pressure1`, `Usage.cont`, `Hyd.Pressure2` and `Filler.Level` contribute the most to the pH levels according to the linear regression model. The linear model places heavy emphasis on the `Mnf.Flow` and equal importance to `Temperature` and `Carb.Pressure1`.
+
+
+## Non-Linear Regression
+
+### MARS
+
+```{r}
+
+marsGrid <- expand.grid(.degree = 1:2, .nprune = 2:38)
+
+
+set.seed(100)
+marsM <- train(X.train.cs, Y.train.cs,
+                    method = "earth",
+                    tuneGrid = marsGrid,
+                    trControl = trainControl(method = "cv"))
+```
+
+### Support Vector Machine
+
+```{r}
+supModel <- train(X.train.cs, Y.train.cs,
+ method = "svmRadial",
+ tuneLength = 14,
+ trControl = trainControl(method = "cv"))
+
+```
+
+### KNN
+
+```{r}
+knnModel <- train(x = X.train.cs,
+                  y = Y.train.cs,
+                  method = "knn",
+                  tuneLength = 10)
+
+```
+
+Non-Linear Model Predictions:
+
+```{r}
+set.seed(150)
+
+
+marsPred <- predict(marsM, newdata = X.test.cs)
+marsResample <- postResample(pred=marsPred, obs = Y.test.cs)
+
+svmPred <-predict(supModel, newdata=X.test.cs)
+svmResample <- postResample(pred=svmPred, obs=Y.test.cs)
+
+knnPred <-predict(knnModel, newdata=X.test.cs)
+knnResample <- postResample(pred=knnPred, obs=Y.test.cs)
+
+
+
+```
+
+```{r}
+display <- rbind(
+"MARS" = marsResample,
+"Support Vector Machine" = svmResample,
+"KNN" = knnResample
+)
+
+
+display %>% kable() %>% kable_paper()
+
+
+```
+
+Importance of Variables (Best Non-linear Model):
+
+Using Rsquared and MAE as the principal criteria for selecting the best model, the support vector machine produces the best metrics. However, the Rsquared value is still slightly below 0.50, so it is an overall poor model. Despite, the low Rsquared we can evaluate the most influential variables. 
+
+```{r, echo=FALSE}
+plot(varImp(supModel), top = 10)
+```
+
+The non-linear model places high importance of `Mnf.Flow` just as the linear model, but there is a difference in the other variables. `Usage.cont` and `Filler.Level` are secondary and tertiary top contributors. 
+
+
+## Trees
+
+The tree models are going to use data that is not normalized but still require imputation, removal of highly correlated data, and variables that contain near zero variance. 
+
+```{r, echo=FALSE}
+df_train3 <- df_train
+
+df_train3 <- df_train3 %>% select(c(-"Brand.Code", -"Dataset", -"PH"))
+
+```
+
+
+```{r, echo=FALSE}
+set.seed(150)
+Processed2 <- preProcess(df_train3, 
+                   method = c("knnImpute"))
+comPH <- predict(Processed2, df_train3)
+comPH$PH = df_train$PH
+
+```
+
+```{r, echo=FALSE}
+comPH <- complete_ph %>% na.omit()
+```
+
+```{r, echo=FALSE}
+
+phframe2 <- comPH[,-c(nearZeroVar(comPH))]
+corr_data <- findCorrelation(cor(phframe2), cutoff = 0.90)
+phframe2 <- phframe[, -corr_data]
+
+```
+
+```{r, echo=FALSE}
+set.seed(150)
+predictors2 <- subset(phframe2, select = -PH)
+PH2 <- subset(phframe2, select="PH")
+
+initsplit3 <- createDataPartition(PH2$PH, p=0.8, list=FALSE)
+
+
+#Create Training Data to tune the model
+X.train <- predictors[initsplit3,]
+Y.train <- PH2[initsplit3,]
+
+
+#Create testing data to evaluate the model
+X.test <- predictors[-initsplit3,]
+Y.test <- PH2[-initsplit3,]
+
+```
+
+
+
+### Random forest
+
+```{r}
+rfModel <- randomForest(X.train, Y.train, importance=TRUE, ntree = 500)
+
+```
+
+
+### Cubist
+
+```{r}
+set.seed(100)
+
+
+cubistTune <- train(X.train, Y.train,
+    method = "cubist",
+    verbose = FALSE)
+
+```
+
+
+### Gradient boosting
+
+```{r}
+gbmGrid <- expand.grid(
+         interaction.depth = seq(1, 7, by = 2),
+         n.trees = seq(100, 1000, by = 50),
+         shrinkage = c(0.01, 0.1),
+         n.minobsinnode = 10
+         )
+
+set.seed(100)
+
+gbmTune <- train(X.train, Y.train,
+    method = "gbm",
+    tuneGrid = gbmGrid,
+    verbose = FALSE)
+
+```
+
+Tree Predictions:
+
+```{r}
+set.seed(150)
+
+
+randomPred <- predict(rfModel, newdata = X.test)
+randomResample <- postResample(pred=randomPred, obs = Y.test)
+
+gbmPred <-predict(gbmTune, newdata=X.test)
+gbmResample <- postResample(pred=gbmPred, obs=Y.test)
+
+cubistPred <-predict(cubistTune, newdata=X.test)
+cubistSample <- postResample(pred=cubistPred, obs = Y.test)
+
+```
+
+```{r}
+display <- rbind(
+"Random Forest" = randomResample,
+"Gradient Boosted Tree" = gbmResample,
+"Cubist" = cubistSample
+)
+
+
+display %>% kable() %>% kable_paper()
+
+
+```
+
+Importance of Variables (Best Tree Model):
+
+Based on the same criteria from above, we can see much better results from our tree models. The Cubist and Random Forest produce similar results with a slight edge for Cubist. 
+
+```{r}
+plot(varImp(cubistTune), top = 10)
+```
+
+This model places equal importance to `Mnf.Flow` and `Alch.Rel`. The other top predictors are `Carb.Rel`, `Pressure.Vacuum`, and `Temperature`. From a chemical standpoint, it makes sense that the model would place a high importance in predicting PH to `Alch.Rel` and `Carb.Rel`, since those variables deal with oxygen and hydrogen (which either increase or decrease PH). 
+
 
 # Model Selection
+
+# Further Evaluation of Most Important Variables
 
 # Conclusion

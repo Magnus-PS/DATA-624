@@ -1,0 +1,748 @@
+---
+title: "DATA624P2"
+author: "Gabriel Abreu, Magnus Skonberg"
+date: "`r Sys.Date()`"
+output: 
+ html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+    highlight: tango
+---
+
+```{r setup, include = FALSE }
+# Libraries and Options
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(RCurl)
+library(dplyr)
+library(forecast)
+library(ggplot2)
+library(knitr)
+library(inspectdf)
+library(corrplot)
+library(tidyverse)
+library(VIM)
+library(tidyr)
+library(kableExtra)
+library(mice)
+library(Boruta)
+library(randomForest)
+library(caret)
+library(RANN)
+
+```
+
+```{r custom-functions, include=FALSE}
+
+options(scipen = 9)
+
+set.seed(123)
+
+boxplot_depend_vs_independ <- function(df_train, target_name) {
+  train_int_names <- df_train %>% select_if(is.numeric)
+  int_names <- names(train_int_names)
+  myGlist <- vector('list', length(int_names))
+  names(myGlist) <- int_names
+  
+  for (i in int_names) {       
+ 
+   myGlist[[i]] <- 
+       ggplot(df_train, aes_string(x = target_name, y = i)) + 
+        geom_boxplot(color = 'steelblue', outlier.color = 'firebrick', 
+                     outlier.alpha = 0.35) +
+        labs(title = paste0(i,' vs target'), y = i, x= 'target') +
+        theme_minimal() + 
+        theme(
+          plot.title = element_text(hjust = 0.45),
+          panel.grid.major.y =  element_line(color = "grey", 
+                                             linetype = "dashed"),
+          panel.grid.major.x = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          panel.grid.minor.x = element_blank(),
+          axis.ticks.x = element_line(color = "grey")
+        )
+       
+      }
+    myGlist <- within(myGlist, rm(target_name))
+    gridExtra::grid.arrange(grobs = myGlist, ncol = 4)
+}
+
+plot_corr_matrix <- function(dataframe, significance_threshold){
+  title <- paste0('Correlation Matrix for significance > ',
+                  significance_threshold)
+  
+  df_cor <- dataframe %>% mutate_if(is.character, as.factor)
+  
+  df_cor <- df_cor %>% mutate_if(is.factor, as.numeric)
+  #run a correlation and drop the insignificant ones
+  corr <- cor(df_cor)
+  #prepare to drop duplicates and correlations of 1     
+  corr[lower.tri(corr,diag=TRUE)] <- NA 
+  #drop perfect correlations
+  corr[corr == 1] <- NA 
+  #turn into a 3-column table
+  corr <- as.data.frame(as.table(corr))
+  #remove the NA values from above 
+  corr <- na.omit(corr) 
+  #select significant values  
+  corr <- subset(corr, abs(Freq) > significance_threshold) 
+  #sort by highest correlation
+  corr <- corr[order(-abs(corr$Freq)),] 
+  #print table
+  # print(corr)
+  #turn corr back into matrix in order to plot with corrplot
+  mtx_corr <- reshape2::acast(corr, Var1~Var2, value.var="Freq")
+  
+  #plot correlations visually
+  corrplot(mtx_corr,
+           title=title,
+           mar=c(0,0,1,0),
+           method='color', 
+           tl.col="black", 
+           na.label= " ",
+           addCoef.col = 'black',
+           number.cex = .9)
+}
+
+```
+
+# Background
+
+The purpose of our second project is to work as a team to apply concepts from the 2nd half of our Predictive Analytics course to a beverage data set. More specifically, to explore the data, determine whether we might use a linear regression, non-linear regression or tree-based model, to then build, compare, select our optimal model, and support why we made the selection that we did.
+
+## ABC Beverage Spec
+ 
+**This is role playing. I am your new boss. I am in charge of production at ABC Beverage and you are a team of data scientists reporting to me. My leadership has told me that new regulations are requiring us to understand our manufacturing process, the predictive factors and be able to report to them our predictive model of PH.**
+
+**Please use the historical data set I am providing. Build and report the factors in BOTH a technical and non-technical report. I like to use Word and Excel. Please provide your non-technical report in a business friendly readable document and your predictions in an Excel readable format. The technical report should show clearly the models you tested and how you selected your final approach.**
+
+```{r import-data, message=FALSE, warning=FALSE, eval=TRUE}
+
+# read in data (as CSVs)
+train <- read.csv("https://raw.githubusercontent.com/Magnus-PS/DATA-624/main/624P2TrainData.csv")
+test <- read.csv("https://raw.githubusercontent.com/Magnus-PS/DATA-624/main/624P2EvalData.csv")
+
+# rename i..Brand.Code
+names(train)[names(train) == "ï..Brand.Code"] <- "Brand.Code"
+names(test)[names(test) == "ï..Brand.Code"] <- "Brand.Code"
+
+# label datasets
+train$Dataset <- 'train'
+test$Dataset <- 'test'
+
+# merge datasets
+final_df <- rbind(train, test)
+
+```
+
+## Approach
+
+We will explore, analyze and model a data set containing approximately 2,600 training and 300 test records representing various brands of a beverage. The variables appear to be related to beverage chemical and manufacturing properties as well as the brand of beverage created. 
+
+The response variable is `PH` which represents the pH level of each beverage. We'll generate multiple models and then select the best performing model for our training data prior to casting predictions for our test data's `PH` variable (which is currently all NAs).
+
+We'll follow the general, high-level approach that is common in Data Science:
+
+* Exploratory Data Analysis (EDA),
+* Data Preparation,
+* Model Building, and
+* Model Selection
+
+Prior to casting our predictions.
+
+---
+
+# Exploratory Data Analysis (EDA)
+
+The purpose of exploring our data is to enhance the precision of the questions we’re asking while building a firm understanding of the data. The aim is to familiarize ourselves with the data's structure, the status of missing values, outliers, predictive strength, and correlation to then take the actions necessary to prepare our data for model building. 
+
+We get to know the structure, value ranges, proportion of missing values, distribution of values and correlation with the target variable. After this point, we should have enough insight to prepare our data and build our model(s).
+
+## Data Structure
+
+We utilize the built-in `glimpse` method to gain insight into dimensions, variable characteristics, and value ranges for our training data:
+
+```{r glimpse-data}
+
+glimpse(train)
+
+```
+
+From above, we gather that:
+
+* we're dealing with training data with 33 variables (discluding our addition of a "dataset" variable) and 2571 observations,
+* a response variable `pH` of type double,
+* a `Brand Code` categorical variable,
+* remaining dependent variables of type int and double,
+* variables that may be useless (ie. `Hyd.Pressure1` with all 0s),
+* a significant difference in the scale of many features (ie. `Filler.Speed` v. `Oxygen.Filler`), and
+* a presence of missing / NA values.
+
+Let's get a high level look at our distributions: 
+
+```{r}
+
+summary(train)
+
+```
+
+We note presence of negative values (ie. `Pressure.Vacuum`), difference of scales and distribution, and confirm the presence of NA values (including 212 values in `MFR`) across numerous variables.
+
+## Missing Values
+
+Next, we investigate missing values in greater depth:
+
+```{r aggr-plots1, results=F, fig.height=8, fig.width=15}
+
+VIM::aggr(final_df %>% filter(Dataset == 'train'), col=c('green','red'), numbers=T, sortVars=T,
+          cex.axis = .7,
+          ylab=c("Proportion of Data", "Combinations and Percentiles"))
+
+```
+
+From the proportion chart above on the left we can see that:
+
+* `MFR` has ~8% missing values (the most of any variable),
+* a significant proportion of variables have 1-2% missing values (ie. `Filler.Speed`),
+* a significant proportion of variables have less than 1% missing data (ie. `PSC.Fill`), and
+* 4 variables (ie. `Brand.Code`) have no missing data.
+
+When we shift our attention to the Combinations and Percentiles chart (on the right), it appears that while there may be instances of related patterns between variables (ie. `MFR` and `Fill.Pressure`), the data is primarily missing at random.
+
+## Data Type Conversions
+
+We're primarily dealing with numeric variables but in order to properly utilize our categorical variable, we convert it to type factor. We re-label empty strings as "Unlabelled" and then convert our `Brand.Code` variable to be of type factor:
+
+```{r}
+
+#Relabel missing brand codes to be "Unlabelled"
+final_df$Brand.Code[final_df$Brand.Code == ""] <- NA
+final_df$Brand.Code <- final_df$Brand.Code %>% tidyr::replace_na('Unlabelled')
+
+#convert brand code to factor
+final_df  <- final_df %>% dplyr::mutate(Brand.Code = factor(Brand.Code, levels = c('Unlabelled', 'A','B','C','D'), ordered = TRUE))
+
+```
+
+## Numeric Variable Distributions
+
+Earlier we'd noted the vast difference in ranges between numeric variables. To explore this point further and gain greater insight as to the distribution of each variable, we utilize inspectdf's `inspect_num()` function:
+
+```{r, fig.height=20, fig.width=15}
+
+#Variable distributions
+inspectdf::inspect_num(final_df %>% filter(Dataset == 'train')) %>% 
+  show_plot()
+
+```
+
+We observe a range of distributions:
+
+* `Carb.Pressure`, `Carb.Temp`, `Carb,Volume`, `Fill.Ounces`, `PC.Volume`, `PH`, `Pressure.Vacuum`, `PSC`, `PSC.Fill`, and `Temperature` have relatively normal spreads where just a few of the variables are skewed and would require centering / normalization,
+* `Alch.Rel`, `Bowl.Setpoint`, and `Pressure.Setpoint` appear to resemble distinct numerical variables with distributions centered about a few values, and
+* remaining distributions are non-normal and in need of scaling and centering.
+
+From above, there may be a place for introducing dummy / flag variables (ie. `Alch.Rel` = 0.6) and that
+centering and scaling will prove essential prior to model-building. Fortunately, R has built in functions to center and scale automatically and en masse.
+
+## Categoric Contingency Table
+
+Next, we create a contingency table for our categorical variable to better understand the relationship between `Brand.Code` and `PH`:
+
+```{r}
+
+table(final_df$Brand.Code, final_df$PH)
+
+```
+
+From above we might extend that:
+
+* B is the most popular beverage brand,
+* that the distributons are quite sparse outside of the range of 8.3 thru 8.8, and 
+* the brand of beverage appears to have some correlation to PH level.
+
+## Boxplots
+
+With a basic understanding of the distribution of each of our features, we turn to the boxplot of each numeric distribution in order to visualize the magnitude of outliers:
+
+```{r boxplot2, fig.height=20, fig.width=12} 
+
+# Utilize customized box plot generation function
+df_train <- final_df %>% filter(Dataset == 'train')
+boxplot_depend_vs_independ(df_train, df_train$PH)
+
+```
+
+What we gather from the output is:
+
+* our response variable (`PH`) has a range of ~8.4-8.7 with outlier values > 9.0 and ~ 8.0,
+* `Mnf.Flow`, `Hyd.Pressure2`, `Hyd.Pressure3` `Usage.cont`, `Carb.Flow`, `Density`, `Balling`, `Bowl.Setpoint`, `Pressure.Setpoint`, and `Balling.Lvl` have **no outliers**,
+* `Carb.Volume`, `Carb.Pressure`, `PSC.CO2`, `Hyd.Pressure1`, `Filler.Level`, `Pressure.Vacuum`, and `Alch.Rel` have **minimal outliers**, and
+* remaining (15) variables have a **significant presence of outliers**.
+
+As such, either outlier-handling will be essential in properly predicting our continuous, numeric response variable (`PH`) or we're dealing with a non-linear relationship. Based on the high presence of "outliers" we feel that this is more-likely-than-not the case.
+
+## Correlation Matrix
+
+Having reviewed the structure, distributions, and presence of outliers for our variables, we turn our attention to exploring the relationship these variables have with one another via **correlation matrix**. We consider only variables with a correlation significant > 0.1 in our plot:
+
+```{r correlation-matrix , warning=FALSE}
+
+#Utilize custom-built correlation matrix generation function
+plot_corr_matrix(final_df %>% filter(Dataset == 'train'), -1)
+
+```
+
+It does not appear that multicollinearity is a concern. From this we might extend that feature exclusion based on multicollinearity will not be a concern.
+
+## Variable Importance
+
+As a final step in the exploration of our data, we shoot to understand which variables have the strongest v. weakest relationship with `PH` level. This information may prove useful later during feature exclusion / selection:
+
+```{r boruta, comment=FALSE, warning=FALSE, message=FALSE, fig.height = 8, fig.width = 10}
+
+# Perform Boruta search
+boruta_output <- Boruta(PH ~ ., data=na.omit(train), doTrace=0, maxRuns = 1000)
+
+# Get significant variables including tentatives
+boruta_signif <- getSelectedAttributes(boruta_output, withTentative = TRUE)
+
+#print(boruta_signif)
+# Plot variable importance
+plot(boruta_output, cex.axis=.7, las=2, xlab="", main="Variable Importance")
+
+```
+
+Our Boruta output indicates that 4 of our features may be insignificant (`PSC.CO2`, `PSC`, `PSC.Fill` and `Carb.Temp`) while the remainder appear to be significant. With `Mnf.Flow` carrying the greatest variable importance (by a narrow margin).
+
+## EDA Summary
+
+The training dataset has 33 variables and 2571 observations. The remediation actions became apparent over the course of our exploratory data analysis:
+
+* There are numerous features with a weak relationship to `PH`. While on the surface we might consider dropping these variables (ie. `PSC.CO2`), first we should see whether their importance increases once we consider other features during our regression / model-building.
+* Multicollinearity does not appear to be a concern.
+* There are outliers in the majority of our features. Either these will have to be addressed or the relationship between response and predictors is nonlinear.
+* Imputing missing values will be an important factor in our modeling. From our analysis, KNN may be a logical approach since beverages of similar compositions (PH levels) should have similar values.
+* Centering and scaling will likely be essential prior to model-building and especially depending on the approach we elect for predicting our continuous, numeric response variable (`PH`).
+
+The recommendations above provide a “starting line” for our data preparation. Being that, the majority of our features appear to have a relatively strong relationship with `PH`, we'd anticipate being able to pull much signal from the variables at hand and developing a strong model.
+
+---
+
+# Data Prep
+
+With insights from exploratory data analysis, we set out to prepare our data for modeling. Our aim is to "optimize" our data for modeling. We'll impute missing values, normalize our data, handle outliers via BoxCox transformation and then proceed to model building.
+
+We utilize the `preProcess` function from the caret package to center, scale, impute, and apply a Box-Cox transformation. This will optimize the data set for the different linear and nonlinear models we're going to build. *It is important to note that Random Forest does not need the data to be normalized.* 
+
+By scaling our data, it can smooth any nonlinear relationships in the model. If there are nonlinear relationships, by transforming the data, these non-linearities are not going to be reflected in the predictions.
+
+It is important to normalize data for linear / non-linear regression as well as neural network models. Being that we're going to consider a few different linear and nonlinear regression models in addition to a random forest model, we elected to created two data sets: one normalized and one not.
+
+For normalization, we drop the `Brand.Code`, `Dataset`, and `PH` columns from consideration and utilize the `preProcess()` function to center, scale, impute via kNN imputation, and handle outliers via BoxCox transformation. Additionally, we ensure that we proceed with only complete PH values and then train-test split our training data so that we can verify its performance before later casting a prediction on the test set.
+
+```{r, echo=FALSE}
+
+df_train2 <- df_train
+df_train2 <- df_train2 %>% select(c(-"Brand.Code", -"Dataset", -"PH"))
+
+```
+
+```{r}
+
+set.seed(150)
+
+#center, scale, and impute
+Processed <- preProcess(df_train2, method = c("knnImpute", "center", "scale", "BoxCox"))
+
+#fill missing pH values and ensure we don't proceed with missing PH values for training set
+complete_ph <- predict(Processed, df_train2)
+complete_ph$PH = df_train$PH
+complete_ph <- complete_ph %>% na.omit()
+```
+
+```{r, echo=FALSE}
+
+#remove columns with pairwise corerlation
+phframe <- complete_ph[,-c(nearZeroVar(complete_ph))]
+corr_data <- findCorrelation(cor(phframe), cutoff = 0.90)
+phframe <- phframe[, -corr_data]
+
+```
+
+```{r, echo=FALSE}
+
+set.seed(150)
+predictors <- subset(phframe, select = -PH)
+PH <- subset(phframe, select="PH")
+initsplit2 <- createDataPartition(PH$PH, p=0.8, list=FALSE)
+
+#Create Training Data to tune the model
+X.train.cs <- predictors[initsplit2,]
+Y.train.cs <- PH[initsplit2,]
+
+#Create testing data to evaluate the model
+X.test.cs <- predictors[-initsplit2,]
+Y.test.cs <- PH[-initsplit2,]
+
+```
+
+---
+
+# Model Building
+
+In this section we're going to consider linear, non-linear, and tree-based models to select first the strongest model within each sub-group and then the over-all top performing model.
+
+Our EDA led us to believe that we're dealing with non-linear data where the heavy presence of outliers may create problems for our linear and non-linear regression models. We anticipate the linear model will have the poorest performance because of the non-linear nature of our variables and the heavy presence of outliers while the non-linear models may struggle a bit because of the heavy skew that our outliers will have created within our models. We felt that the magnitude of outliers in addition to the apparent non-linearity of the data would mean that linear regression models would not perform well.
+
+From this, we believe a tree-based model might be best but will consider linear and non-linear regression models for sake of consistency and in order to properly rule them out.
+
+## Linear Regression
+
+With our data prepared, we consider a number of linear regression models: multi-linear regression, AIC optimized, and partial least squares. We utilize the same `train()` function for all three models, feeding the same datasets for X and Y, and specifying the proper model-building technique via the "method" variable:
+
+### Multi-linear regression
+
+```{r}
+
+linear_model <- train(X.train.cs, Y.train.cs,
+                      method='lm',
+                      trControl=trainControl(method = "cv"))
+
+```
+
+
+### AIC optimized
+
+```{r, include=F}
+
+aic_model <- train(X.train.cs, Y.train.cs,
+                      method='lmStepAIC',
+                      trControl=trainControl(method = "cv"))
+
+```
+
+### Partial Least Squares
+
+```{r}
+pls_model <- train(X.train.cs, Y.train.cs,
+                      method='pls',
+                      metric='Rsquared',
+                      tuneLength=10,
+                      trControl=trainControl(method = "cv"))
+```
+
+With all three multi-linear regression models built, we proceed to casting our predictions and then verifying performance against the test portion of our train-test split data. *Recall: it's all been derived from our training set.*
+
+```{r}
+
+set.seed(150)
+
+lmPred <- predict(linear_model, newdata = X.test.cs)
+lmResample <- postResample(pred=lmPred, obs = Y.test.cs)
+
+aicPred <-predict(aic_model, newdata=X.test.cs)
+aicResample <- postResample(pred=aicPred, obs=Y.test.cs)
+
+plsPred <-predict(pls_model, newdata=X.test.cs)
+plsReSample <- postResample(pred=plsPred, obs = Y.test.cs)
+
+```
+
+The purpose of this section is to verify model performance and identify the strongest performing model in our multi linear regression subset. Based on what we observed during EDA (exploratory data analysis) we did not anticipate the linear regression models to perform well:
+
+```{r}
+
+display <- rbind(
+"Linear Regression" = lmResample,
+"Stepwise AIC" = aicResample,
+"Partial Least Sqaures" = plsReSample
+)
+
+display %>% kable() %>% kable_paper()
+
+```
+
+Using Rsquared and MAE as the principal criteria for selecting the best model, the Linear Model produces the best metrics. However, the Rsquared value is very low and only ~35% of the variation in the output variable can be explained by the input variables. This is not good at all. All of the linear models produced very similar results, suggesting that the relationship between our target variable and the predictors is non-linear. 
+
+As a final measure we investigate the top ten influential predictors:
+
+```{r, echo=FALSE}
+
+plot(varImp(linear_model), top = 10)
+```
+
+We see that `Mnf.Flow`, `Temperature`, `Carb.Pressure1`, `Usage.cont`, `Hyd.Pressure2` and `Filler.Level` contribute the most to the pH levels according to the linear regression model. The linear model places heavy emphasis on the `Mnf.Flow` and equal importance to `Temperature` and `Carb.Pressure1`.
+
+---
+
+## Non-Linear Regression
+
+As a next natural step, we proceed to exploring the efficacy of non-linear models. We consider Multi-Adaptive Regression Spline (MARS), Support Vector Machine (SVM), and K-Nearest Neighbors (KNN) models and anticipate that our non-linear regression models will outperform their linear counterparts for the simple fact that it appears we're dealing with non-linear variables and non-linear relationships between variables.
+
+We utilize the `train()` function for all three models, feeding the same datasets for X and Y, tuning the grid (where applicable, ie. MARS) and specifying the proper model-building technique via "method" variable:
+
+### MARS
+
+```{r}
+
+marsGrid <- expand.grid(.degree = 1:2, .nprune = 2:38)
+set.seed(100)
+marsM <- train(X.train.cs, Y.train.cs,
+                    method = "earth",
+                    tuneGrid = marsGrid,
+                    trControl = trainControl(method = "cv"))
+
+```
+
+### Support Vector Machine
+
+```{r}
+
+supModel <- train(X.train.cs, Y.train.cs,
+ method = "svmRadial",
+ tuneLength = 14,
+ trControl = trainControl(method = "cv"))
+
+```
+
+### KNN
+
+```{r}
+
+knnModel <- train(x = X.train.cs,
+                  y = Y.train.cs,
+                  method = "knn",
+                  tuneLength = 10)
+
+```
+
+With all three non-linear regression models built, we proceed to casting our predictions and then verifying performance against the test portion of our train-test split data. *Recall: it's all been derived from our training set.*
+
+```{r}
+
+set.seed(150)
+
+marsPred <- predict(marsM, newdata = X.test.cs)
+marsResample <- postResample(pred=marsPred, obs = Y.test.cs)
+
+svmPred <-predict(supModel, newdata=X.test.cs)
+svmResample <- postResample(pred=svmPred, obs=Y.test.cs)
+
+knnPred <-predict(knnModel, newdata=X.test.cs)
+knnResample <- postResample(pred=knnPred, obs=Y.test.cs)
+
+```
+
+The purpose of this section is to verify model performance and identify the strongest performing model in our non linear regression subset. Based on what we observed during EDA (exploratory data analysis) we anticipate our nonlinear models to perform better than our linear regression models although they may still have trouble with the fact that we were dealing with a high magnitude of outliers:
+
+```{r}
+
+display <- rbind(
+  "MARS" = marsResample,
+  "Support Vector Machine" = svmResample,
+  "KNN" = knnResample)
+
+display %>% kable() %>% kable_paper()
+
+```
+
+Using Rsquared and MAE as the principal criteria for selecting the best model, the Support Vector Machine (SVM) performed the best. However, the R-squared value is still below 0.50 which means we're explaining less than 50% of the variation in the output variable with our input variables. This leaves a bit to be desired and so we look to the next section (tree based models) with optimism ... 
+
+As a final measure we investigate the top ten influential predictors:
+
+```{r, echo=FALSE}
+
+plot(varImp(supModel), top = 10)
+
+```
+
+The non-linear model places high importance of `Mnf.Flow` just as the linear model, but there is a difference in the other variables. `Usage.cont` and `Filler.Level` are secondary and tertiary top contributors. 
+
+## Tree-Based
+
+The tree-based models will use non-normalized data in which outliers have not been handled because it's within their capacity to handle both. As such, we repeat many of the pre-processing steps we'd done in preparing for the regression models: removing highly correlated data and variables that contain near zero variance, kNN imputation for missing values, ensuring non-NULL `PH` observations, and train-test splitting our data:
+
+```{r, echo=FALSE}
+
+df_train3 <- df_train
+df_train3 <- df_train3 %>% select(c(-"Brand.Code", -"Dataset", -"PH"))
+
+```
+
+```{r, echo=FALSE}
+
+set.seed(150)
+
+#impute missing values
+Processed2 <- preProcess(df_train3, method = c("knnImpute"))
+
+#ensure we're dealing with non-NULL PH values
+comPH <- predict(Processed2, df_train3)
+comPH$PH = df_train$PH
+comPH <- complete_ph %>% na.omit()
+
+```
+
+```{r, echo=FALSE}
+
+#remove variables with near 0 variance
+phframe2 <- comPH[,-c(nearZeroVar(comPH))]
+corr_data <- findCorrelation(cor(phframe2), cutoff = 0.90)
+phframe2 <- phframe[, -corr_data]
+
+```
+
+```{r, echo=FALSE}
+
+set.seed(150)
+
+predictors2 <- subset(phframe2, select = -PH)
+PH2 <- subset(phframe2, select="PH")
+initsplit3 <- createDataPartition(PH2$PH, p=0.8, list=FALSE)
+
+#Create Training Data to tune the model
+X.train <- predictors[initsplit3,]
+Y.train <- PH2[initsplit3,]
+
+#Create testing data to evaluate the model
+X.test <- predictors[-initsplit3,]
+Y.test <- PH2[-initsplit3,]
+
+```
+
+Once our data's been brought into a proper form, we consider Random Forest, Cubist, and Gradient Boosting models in order to compare and contrast which may be the best tree-based model. As mentioned earlier, we had a hunch that one of the tree-based models would be our strongest performing model being that we were dealing with a high magnitude of outliers and what appeared to be non-linear data.
+
+### Random forest
+
+```{r}
+rfModel <- randomForest(X.train, Y.train, importance=TRUE, ntree = 500)
+```
+
+### Cubist
+
+```{r}
+set.seed(100)
+cubistTune <- train(X.train, Y.train,
+    method = "cubist",
+    verbose = FALSE)
+```
+
+### Gradient boosting
+
+```{r}
+gbmGrid <- expand.grid(
+         interaction.depth = seq(1, 7, by = 2),
+         n.trees = seq(100, 1000, by = 50),
+         shrinkage = c(0.01, 0.1),
+         n.minobsinnode = 10
+         )
+set.seed(100)
+gbmTune <- train(X.train, Y.train,
+    method = "gbm",
+    tuneGrid = gbmGrid,
+    verbose = FALSE)
+```
+
+With all three non-linear regression models built, we proceed to casting our predictions and then verifying performance against the test portion of our train-test split data. *Recall: it's all been derived from our training set.*
+
+```{r}
+
+set.seed(150)
+
+randomPred <- predict(rfModel, newdata = X.test)
+randomResample <- postResample(pred=randomPred, obs = Y.test)
+
+gbmPred <-predict(gbmTune, newdata=X.test)
+gbmResample <- postResample(pred=gbmPred, obs=Y.test)
+
+cubistPred <-predict(cubistTune, newdata=X.test)
+cubistSample <- postResample(pred=cubistPred, obs = Y.test)
+
+```
+
+The purpose of this section is to verify model performance and identify the strongest performing model in our tree based subset. Based on what we observed during EDA (exploratory data analysis) we anticipate these models performing quite well:
+
+```{r}
+
+display <- rbind(
+  "Random Forest" = randomResample,
+  "Gradient Boosted Tree" = gbmResample,
+  "Cubist" = cubistSample)
+
+display %>% kable() %>% kable_paper()
+
+```
+
+Using Rsquared and MAE as the principal criteria for selecting the best model, the Cubist model edges the others and very narrowly overshadows the performance of the Random Forest model. All of our tree-based models performed better than the linear and non-linear model and so our hypotheses were proven. 
+
+**The R-squared for our Cubist model provides indication the model is capable of predicting over 65% of the variance of our data. This is close to the range at which we'd consider it a great model (0.90 >= R-squared >= 0.70) and so we feel relatively comfortable proceeding with the Cubist model as our optimal predictive model.**
+
+As a final measure we investigate the top ten influential predictors:
+
+```{r}
+
+plot(varImp(cubistTune), top = 10)
+
+```
+
+This model places equal importance on `Mnf.Flow` and `Alch.Rel`. 
+
+Other high order predictors are `Carb.Rel`, `Pressure.Vacuum`, and `Temperature`. 
+
+From a chemical standpoint, it makes sense that the model would place a high importance on `Alch.Rel` and `Carb.Rel` when predicting `PH` levels, since those variables deal with oxygen and hydrogen (which either increase or decrease PH).
+
+# Model Selection & Forecast
+
+We considered 9 different models of linear and non-linear regression type in addition to those of a tree-based type. We'd headed into our model building with the hypothesis that tree-based models would outperform nonlinear models would outperform linear models, and it was proven true. 
+
+## Model Selection
+
+The data we were to process had a relatively high magnitude of outliers in addition to nonlinear relationships between variables, and it was for this reason that we felt one of the tree-based models would be our best. While the Random Forest model is worth honorable mention for a strong predictive performance in addition to easy setup, the Cubist model outperformed the Random Forest model in both R-squared and mean absolute error (MAE). 
+
+**We selected the Cubist model first based on performance and second based on ease-of-use (setup)**. The Cubist model performed the best on test data with regard to R-squared and mean absolute error (MAE). Additionally, it required less data pre-processing than our linear and nonlinear regression models and provided our best accuracy "out of the box" (no variable tweaking).
+
+Thus, the Cubist model and Random Forest model were neck-and-neck for ease of use, with the Cubist model edging the Random Forest model in test set performance. Cubist models are a powerful, rule-based model that balance the call for predictive accuracy with that of intelligibility and it's for this reason we're confident in its selection and capability.
+
+## Forecast
+
+We proceed to predicting `PH` values and returning the provided test set with the NA values replaced by our Cubist model predictions:
+
+```{r}
+
+set.seed(150)
+
+#Prep data set: select test then drop dataset variable
+final_test <- final_df %>% 
+  filter(Dataset == 'test') %>% 
+  dplyr::select(-Dataset)
+
+#Cast predictions using model_8
+predict <- round(predict(cubistTune, newdata=final_test),2)
+
+#verify that we've cast predictions
+#head(predict)
+#summary(predict)
+
+#send to Excel / CSV file
+final_test$PH <- predict
+head(final_test)
+
+#write to csv
+write.csv(final_test,"C:/Users/magnu/Documents/DATA-624//DATA624Proj2_PH_prediction.csv", row.names = FALSE)
+
+```
+
+We can see the first 6 predictions above, with PH predictions present in the 26th column. We've provided `PH` values of the same magnitude and value format as we were provided in the training data.
+
+## Variable Importance Commentary
+
+The most important processes in impacting pH, based on our elected model and its overlap with the earlier explored Boruta function are: `Mnf.Flow`, `Alch.Rel`, `Carb.Rel`, and `Temperature`. Putting an emphasis on these four processes in the beverage making process would have the largest perceived impact on the pH levels of our beverages. 
+
+For example, we know that pH decreases when we increase temperature and so to decrease the pH level of a beverage leveraging this one process may reduce the pH level of our beverage (all else held constant). The powerful, and more complex measure, would be the interplay of these variables and their impact on others.
+
+## Closing Remark
+
+In summary, we select the Cubist model for its balance of predictive prowess, interpretability, as well as ease of use. It was our strongest performing model and the one we felt most confident in as highlighted in this closing section.

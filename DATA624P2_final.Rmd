@@ -31,6 +31,7 @@ library(Boruta)
 library(randomForest)
 library(caret)
 library(RANN)
+library(gridExtra)
 
 ```
 
@@ -458,7 +459,7 @@ The purpose of this section is to verify model performance and identify the stro
 display <- rbind(
 "Linear Regression" = lmResample,
 "Stepwise AIC" = aicResample,
-"Partial Least Sqaures" = plsReSample
+"Partial Least Squares" = plsReSample
 )
 
 display %>% kable() %>% kable_paper()
@@ -700,15 +701,31 @@ We considered 9 different models of linear and non-linear regression type in add
 
 ## Model Selection
 
-The data we were to process had a relatively high magnitude of outliers in addition to nonlinear relationships between variables, and it was for this reason that we felt one of the tree-based models would be our best. While the Random Forest model is worth honorable mention for a strong predictive performance in addition to easy setup, the Cubist model outperformed the Random Forest model in both R-squared and mean absolute error (MAE). 
+The data we were to process had a relatively high magnitude of outliers in addition to nonlinear relationships between variables, and it was for this reason that we felt one of the tree-based models would be our best. While the Random Forest model is worth honorable mention for a strong predictive performance in addition to easy setup, the Cubist model outperformed the Random Forest model in both R-squared and mean absolute error (MAE).
+
+When we consider the strongest linear v. nonlinear v. tree-based model we see:
+
+```{r}
+
+display <- rbind(
+  "Partial Least Squares" = plsReSample,
+  "Support Vector Machine" = svmResample,
+  "Cubist" = cubistSample
+)
+
+display %>% kable() %>% kable_paper()
+
+```
+
+The Cubist (tree-based) model by far outperforms the strongest linear and nonlinear models.
 
 **We selected the Cubist model first based on performance and second based on ease-of-use (setup)**. The Cubist model performed the best on test data with regard to R-squared and mean absolute error (MAE). Additionally, it required less data pre-processing than our linear and nonlinear regression models and provided our best accuracy "out of the box" (no variable tweaking).
 
-Thus, the Cubist model and Random Forest model were neck-and-neck for ease of use, with the Cubist model edging the Random Forest model in test set performance. Cubist models are a powerful, rule-based model that balance the call for predictive accuracy with that of intelligibility and it's for this reason we're confident in its selection and capability.
+Cubist models are a powerful, rule-based model that balance the call for predictive accuracy with that of intelligibility and it's for this reason we're confident in its selection and capability.
 
 ## Forecast
 
-We proceed to predicting `PH` values and returning the provided test set with the NA values replaced by our Cubist model predictions:
+We proceed to predicting `PH` values and returning the provided test set with the NA values replaced by our Cubist model's predictions:
 
 ```{r}
 
@@ -735,7 +752,7 @@ write.csv(final_test,"C:/Users/magnu/Documents/DATA-624//DATA624Proj2_PH_predict
 
 ```
 
-We can see the first 6 predictions above, with PH predictions present in the 26th column. We've provided `PH` values of the same magnitude and value format as we were provided in the training data.
+We can see the first 6 predictions above, with `PH` predictions present in the 26th column. We've provided `PH` values of the same magnitude and value format as we were provided in the training data.
 
 ## Variable Importance Commentary
 
@@ -743,38 +760,23 @@ The most important processes in impacting pH, based on our elected model and its
 
 For example, we know that pH decreases when we increase temperature and so to decrease the pH level of a beverage leveraging this one process may reduce the pH level of our beverage (all else held constant). The powerful, and more complex measure, would be the interplay of these variables and their impact on others.
 
-Visual Representations of the top predictors and our target:
-
-`Mnf.Flow` and `PH`
+As a final measure, we consider visualizations of the relationship between our top predictors and `PH`:
 
 ```{r}
-ggplot(train, aes(Mnf.Flow, PH)) + geom_point()
+
+p1 <- ggplot(train, aes(Mnf.Flow, PH)) + geom_point()
+p2 <- ggplot(train, aes(Alch.Rel, PH)) + geom_point()
+p3 <- ggplot(train, aes(Carb.Rel, PH)) + geom_point()
+p4 <- ggplot(train, aes(Temperature, PH)) + geom_point()
+
+grid.arrange(p1, p2, p3, p4, nrow = 2)
+
 ```
 
-
-`Alch.Rel` and `PH`
-
-```{r}
-ggplot(train, aes(Alch.Rel, PH)) + geom_point()
-```
-
-
-
-`Carb.Rel` and `PH`
-
-```{r}
-ggplot(train, aes(Carb.Rel, PH)) + geom_point()
-```
-
-`Temperature` and `PH`
-
-```{r}
-ggplot(train, aes(Temperature, PH)) + geom_point()
-```
-
+We observe that our data are concentrated between pH values of 8.0 and 9.0 with `Mnf.Flow` (minimum night flow) and `Alch.Rel` showing clustering characteristics along certain bands / levels.
 
 ## Closing Remark
 
-In summary, we select the Cubist model for its balance of predictive prowess, interpretability, as well as ease of use. It was our strongest performing model and the one we felt most confident in as highlighted in this closing section.
+While a 1:1 relationship between top predictors and `PH` is not clear (as highlighted in the above visualizations), what is clear is that they are the most important variables for controlling pH levels, they are heavily concentrated within certain ranges, (ie. `Temperature` between 64 and 68 degrees F) and all beverage brands sit at a pH level greater than 8, resulting in alkaline beverages.
 
-The top predictors do not have a clear relationship with `PH`, but based on the visualizations, there are highly concentrated. Given the relationships between the predictors and the target variable are not easily understood, the usage of a complex algorithm like Cubist was necessary. Presenting this information to a decision maker in the beverage company, we can conclude that the most influential contributors are highly concentrated within all brands and mostly produce PH levels above 8, making the beverages alkaline.   
+Provided that the relationships between predictors and response are not easily understood, using a more complex algorithm like Cubist is warranted and favorable. We selected the Cubist model for its balance of predictive prowess, interpret-ability, as well as ease of use. It was our strongest performing model and the one we felt most confident in as highlighted in this closing section.

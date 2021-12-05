@@ -743,6 +743,38 @@ The most important processes in impacting pH, based on our elected model and its
 
 For example, we know that pH decreases when we increase temperature and so to decrease the pH level of a beverage leveraging this one process may reduce the pH level of our beverage (all else held constant). The powerful, and more complex measure, would be the interplay of these variables and their impact on others.
 
+Visual Representations of the top predictors and our target:
+
+`Mnf.Flow` and `PH`
+
+```{r}
+ggplot(train, aes(Mnf.Flow, PH)) + geom_point()
+```
+
+
+`Alch.Rel` and `PH`
+
+```{r}
+ggplot(train, aes(Alch.Rel, PH)) + geom_point()
+```
+
+
+
+`Carb.Rel` and `PH`
+
+```{r}
+ggplot(train, aes(Carb.Rel, PH)) + geom_point()
+```
+
+`Temperature` and `PH`
+
+```{r}
+ggplot(train, aes(Temperature, PH)) + geom_point()
+```
+
+
 ## Closing Remark
 
 In summary, we select the Cubist model for its balance of predictive prowess, interpretability, as well as ease of use. It was our strongest performing model and the one we felt most confident in as highlighted in this closing section.
+
+The top predictors do not have a clear relationship with `PH`, but based on the visualizations, there are highly concentrated. Given the relationships between the predictors and the target variable are not easily understood, the usage of a complex algorithm like Cubist was necessary. Presenting this information to a decision maker in the beverage company, we can conclude that the most influential contributors are highly concentrated within all brands and mostly produce PH levels above 8, making the beverages alkaline.   

@@ -689,9 +689,7 @@ plot(varImp(cubistTune), top = 10)
 
 ```
 
-This model places equal importance on `Mnf.Flow` and `Alch.Rel`. 
-
-Other high order predictors are `Carb.Rel`, `Pressure.Vacuum`, and `Temperature`. 
+This model places highest importance on `Mnf.Flow` and `Alch.Rel` followed by `Density`, `Temperature` and so on down the line. The plot highlights which variabls are most important to our model and thus in predicting pH levels.
 
 From a chemical standpoint, it makes sense that the model would place a high importance on `Alch.Rel` and `Carb.Rel` when predicting `PH` levels, since those variables deal with oxygen and hydrogen (which either increase or decrease PH).
 
@@ -756,7 +754,7 @@ We can see the first 6 predictions above, with `PH` predictions present in the 2
 
 ## Variable Importance Commentary
 
-The most important processes in impacting pH, based on our elected model and its overlap with the earlier explored Boruta function are: `Mnf.Flow`, `Alch.Rel`, `Carb.Rel`, and `Temperature`. Putting an emphasis on these four processes in the beverage making process would have the largest perceived impact on the pH levels of our beverages. 
+The most important processes in impacting pH, based on our elected model and its overlap with the earlier explored Boruta function are: `Mnf.Flow`, `Alch.Rel`, `Carb.Rel`, and `Temperature`. `Density` was not as important in our general exploration of variable importance but it was important to our model. Putting an emphasis on these processes in the beverage making process would have the largest perceived impact on the pH levels of our beverages. 
 
 For example, we know that pH decreases when we increase temperature and so to decrease the pH level of a beverage leveraging this one process may reduce the pH level of our beverage (all else held constant). The powerful, and more complex measure, would be the interplay of these variables and their impact on others.
 
